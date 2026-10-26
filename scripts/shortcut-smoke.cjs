@@ -1,0 +1,9 @@
+'use strict';
+const {chromium}=require('playwright-core'),fs=require('node:fs'),net=require('node:net'),path=require('node:path'),{spawnSync}=require('node:child_process'),assert=require('node:assert/strict');
+(async()=>{
+  const [shortcut,folder]=process.argv.slice(2);const server=net.createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;await new Promise(r=>server.close(r));
+  const args=`--remote-debugging-port=${port} --data-folder="${folder}"`;
+  const result=spawnSync('powershell.exe',['-NoProfile','-Command','Start-Process -FilePath $env:STUDIO_SHORTCUT -ArgumentList $env:STUDIO_SHORTCUT_ARGS -WindowStyle Hidden'],{env:{...process.env,STUDIO_SHORTCUT:shortcut,STUDIO_SHORTCUT_ARGS:args,INVOICE_STUDIO_HIDDEN:'1'},windowsHide:true,encoding:'utf8'});if(result.status!==0)throw Error(result.stderr);
+  let browser;for(let i=0;i<40;i++){try{browser=await chromium.connectOverCDP(`http://127.0.0.1:${port}`,{timeout:1000});break;}catch{await new Promise(r=>setTimeout(r,250));}}if(!browser)throw Error('The shortcut did not open the expected desktop app.');
+  try{const p=browser.contexts()[0].pages().find(p=>p.url().startsWith('studio://app/'))||await browser.contexts()[0].waitForEvent('page');await p.waitForFunction(()=>window.app?.state);const state=await p.evaluate(()=>window.invoiceAPI.getState());assert.equal(state.dataFolder,folder);assert.equal(state.documents.length,1);fs.writeFileSync(path.join(__dirname,'../test-output/shortcut-result.json'),JSON.stringify({actualLaunch:true,shortcut,dataFolder:state.dataFolder,documents:state.documents.length},null,2));await p.evaluate(()=>window.invoiceAPI.closeReady()).catch(e=>{if(!/closed/i.test(e.message))throw e;});console.log('Actual desktop shortcut launch passed with Unicode path and preserved data.');}finally{await browser.close().catch(()=>{});}
+})().catch(e=>{console.error(e);process.exitCode=1;});

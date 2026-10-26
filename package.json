@@ -1,0 +1,79 @@
+{
+  "name": "invoice-billing-studio",
+  "version": "3.0.1",
+  "description": "Offline invoice workstation with SQLite, Excel and searchable PDF output",
+  "author": "Magic Roots",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "build:css": "tailwindcss -i css/tailwind-input.css -o css/tailwind.css --minify",
+    "test": "node --test tests/*.test.cjs",
+    "test:desktop": "node scripts/desktop-smoke.cjs",
+    "dist": "npm run build:css && electron-builder --win nsis portable --x64 --publish never",
+    "dist:dir": "npm run build:css && electron-builder --win --x64 --dir --publish never"
+  },
+  "dependencies": {
+    "decimal.js": "10.6.0",
+    "exceljs": "4.4.0",
+    "jszip": "3.10.1"
+  },
+  "devDependencies": {
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
+    "@fontsource-variable/plus-jakarta-sans": "5.3.0",
+    "electron": "45.0.0",
+    "electron-builder": "26.18.0",
+    "playwright-core": "1.64.1",
+    "tailwindcss": "3.4.19"
+  },
+  "overrides": {
+    "uuid": "11.1.1",
+    "postcss-selector-parser": "7.1.6"
+  },
+  "build": {
+    "appId": "in.magicroots.invoice-studio",
+    "productName": "Invoice Studio",
+    "asar": true,
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/**/*",
+      "shared/**/*",
+      "js/studio.js",
+      "css/**/*",
+      "assets/**/*",
+      "templates/*.xlsx",
+      "index.html",
+      "lib/qrcode.js",
+      "lib/lucide.min.js",
+      "lib/decimal.js",
+      "package.json",
+      "LICENSES/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "signExecutable": false,
+      "icon": "assets/icon.ico",
+      "artifactName": "Invoice-Studio-${version}-Setup-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": false
+    },
+    "portable": {
+      "artifactName": "Invoice-Studio-${version}-Portable.${ext}"
+    }
+  }
+}
