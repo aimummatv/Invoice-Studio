@@ -80,14 +80,14 @@ class InvoiceStudioApp{
     clearTimeout(this.timer);if(this.draft.status!=='draft'||(!this.dirty&&!show))return this.draft;this.requireDesktop();
     this.saveChain=this.saveChain.catch(()=>{}).then(async()=>{
       if(!this.dirty&&this.draft.revision>0)return this.draft;const draft=C.clone(this.draft),version=this.version;$('save-status').textContent='Saving…';
-      try{const saved=await this.api.saveDraft(draft);if(this.draft.id===draft.id){this.draft.revision=saved.revision;this.dirty=this.version!==version;this.savedVersion=version;this.upsertDocument(saved);$('save-status').textContent=this.dirty?'Unsaved changes':'Saved to disk';$('save-status').classList.remove('saving-error');this.renderPicker();if(this.dirty)this.timer=setTimeout(()=>this.flush().catch(e=>this.notice(e.message)),300);}if(show)this.toast('Draft saved to the database.');return saved;}
+      try{const saved=await this.api.saveDraft(draft);if(this.draft.id===draft.id){this.draft.revision=saved.revision;this.dirty=this.version!==version;this.savedVersion=version;this.upsertDocument(saved);$('save-status').textContent=this.dirty?'Unsaved changes':'Saved to disk';$('save-status').classList.remove('saving-error');this.renderPicker();if(this.dirty)this.timer=setTimeout(()=>this.flush().catch(e=>this.notice(e.message)),300);}if(show){await this.refresh();this.toast('Draft & products saved to database.');}return saved;}
       catch(e){$('save-status').textContent='Save failed';$('save-status').classList.add('saving-error');this.dirty=true;throw e;}
     });return this.saveChain;
   }
   upsertDocument(d){const i=this.state.documents.findIndex(x=>x.id===d.id);if(i<0)this.state.documents.unshift(d);else this.state.documents[i]=d;}
   async refresh(){this.state=await this.api.getState();}
   async openDocument(id){await this.flush();if(!id)return this.newDraft();const d=this.state.documents.find(x=>x.id===id);if(!d)return;this.draft=C.clone(d);this.dirty=false;this.undoStack=[];this.version=0;this.render();}
-  async newDraft(type){await this.flush();this.draft=C.newDraft(type||this.draft.documentType,this.state.profile);this.dirty=false;this.undoStack=[];this.version=0;this.step=0;this.render();}
+  async newDraft(type){await this.flush();await this.refresh();this.draft=C.newDraft(type||this.draft.documentType,this.state.profile);this.dirty=false;this.undoStack=[];this.version=0;this.step=0;this.render();}
   undo(){if(!this.undoStack.length||this.draft.status!=='draft')return;const revision=this.draft.revision;this.draft=this.undoStack.pop();this.draft.revision=revision;this.changed();this.render();}
   render(){this.renderTabs();this.renderPicker();this.renderSteps();this.renderEditor();this.renderPreview();this.renderFavourites();this.icons();}
   renderTabs(){const labels={'TAX INVOICE':'Tax Invoice','PROFORMA INVOICE':'Proforma','ADVANCE RECEIPT':'Advance Receipt','DELIVERY CHALLAN':'Delivery Challan','CREDIT NOTE':'Credit Note','BILL OF SUPPLY':'Bill of Supply'};$('document-tabs').innerHTML=C.TYPES.map(t=>btn(labels[t],'type',`data-type="${t}"`,this.draft.documentType===t?'active':'')).join('');$('document-support').textContent=this.draft.status==='draft'?'Create, review and save offline':`${this.draft.invoiceNumber} · ${this.draft.status}`;}
@@ -152,7 +152,7 @@ class InvoiceStudioApp{
     if(action==='apply-hsn'){const before=C.clone(this.draft);Object.assign(this.draft.items[Number(data.index)],{hsn:data.hsn,verified:false});this.changed(before);this.closeDialog();return this.renderEditor();}
     if(action==='remember-product'){const l=this.draft.items[Number(data.index)],old=this.state.products.find(x=>x.id===l.productId);return this.productForm({...old,id:old?.id||crypto.randomUUID(),revision:old?.revision||0,name:l.name,hsn:l.hsn,sku:old?.sku||l.sku||'',price:l.unitRate,gstRate:l.gstRate,taxability:l.taxability,unit:l.unit,casePack:l.casePack,verified:false});}
     if(action==='issue')return this.reviewIssue();if(action==='issue-confirm')return this.issue();
-    if(action==='pdf'||action==='print'){this.requireDesktop();await this.flush();if(!this.draft.revision)await this.flush(true);const result=action==='pdf'?await this.api.exportPDF(this.draft.id,false):await this.api.print(this.draft.id);if(result)this.toast(action==='pdf'?'Searchable PDF saved.':'Print dialog completed.');return;}
+    if(action==='pdf'||action==='print'){this.requireDesktop();await this.flush();if(!this.draft.revision)await this.flush(true);const result=action==='pdf'?await this.api.exportPDF(this.draft.id,false):await this.api.print(this.draft.id);if(result){if(action==='pdf'){const fileName=result.path?result.path.split(/[\\/]/).pop():'PDF';this.toast(`Searchable PDF saved & folder opened: ${fileName}`);}else{this.toast('Print dialog completed.');}}return;}
     if(action==='duplicate'||action==='convert'){this.requireDesktop();await this.flush();const d=await this.api.duplicate(data.id||this.draft.id,action==='convert'?'TAX INVOICE':undefined);await this.refresh();this.closeDialog();return this.selectSaved(d);}
     if(action==='credit'){this.requireDesktop();const d=await this.api.createCredit(data.id||this.draft.id);await this.refresh();this.closeDialog();this.step=2;return this.selectSaved(d);}
     if(action==='cancel'){const d=this.state.documents.find(d=>d.id===(data.id||this.draft.id));return this.dialog('Cancel issued document',`<p class="help">${E(d.invoiceNumber)} will retain its number and snapshot. Reverse allocations first if payments are attached.</p><form id="cancel-form"><input type="hidden" name="id" value="${E(d.id)}"><input type="hidden" name="revision" value="${d.revision}">${field('Reason','reason','',{named:true,type:'textarea',full:true})}<div class="dialog-actions"><button type="submit" class="button-danger">Cancel this document</button></div></form>`,'cancel',true);}
@@ -167,6 +167,9 @@ class InvoiceStudioApp{
     if(action==='import-workbook'||action==='import-legacy'){this.requireDesktop();await this.flush();const preview=await this.api.previewImport(action==='import-legacy'?'legacy':'workbook');if(preview){this.importPreview=preview;this.importDialog();}return;}
     if(action==='commit-import'){if(!this.importPreview)return;const out=await this.api.commitImport(this.importPreview.id);if(out){this.importPreview=null;await this.refresh();this.render();this.toast(`Imported ${out.imported} records; skipped ${out.skipped}.`);this.excel();}return;}
     if(action==='reveal-export'){this.requireDesktop();return this.api.revealExport();}
+    if(action==='choose-pdf-folder'){this.requireDesktop();const res=await this.api.chooseExportFolder();if(res?.folder){this.state.pdfExportFolder=res.folder;const el=$('current-export-folder');if(el)el.textContent=res.folder;this.toast('Default PDF export folder updated: '+res.folder);}return;}
+    if(action==='open-pdf-folder'){this.requireDesktop();await this.api.openExportFolder();return;}
+    if(action==='reset-pdf-folder'){this.requireDesktop();const res=await this.api.resetExportFolder();if(res?.folder){this.state.pdfExportFolder=res.folder;const el=$('current-export-folder');if(el)el.textContent=res.folder;this.toast('PDF export folder reset to default.');}return;}
     if(action==='history'){const events=await this.api.history();return this.dialog('Audit history',table(['When','Action','Record','Details'],events.map(e=>`<tr>${td(e.at)}${td(e.kind)}${td(e.record_id)}${td(JSON.stringify(e.payload),'wrap')}</tr>`)),'history');}
     if(action==='change-folder'){this.requireDesktop();await this.flush();const out=await this.api.changeDataFolder();if(out){await this.refresh();this.toast('Data folder changed to '+out.folder);this.excel();}return;}
     if(action==='secondary-backup'){const out=await this.api.secondaryBackup();if(out)this.toast('Secondary backup configured and tested: '+out.folder);return;}
@@ -283,6 +286,22 @@ class InvoiceStudioApp{
             <button type="button" data-action="use-default-logo"><i data-lucide="sparkles"></i>Use Magic Roots Logo</button>
             <button type="button" class="button-danger" data-action="remove-logo"><i data-lucide="trash-2"></i>Remove</button>
           </div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:14px;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--tile);grid-column:1/-1">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <strong style="font-size:12px;font-weight:800;color:var(--text)"><i data-lucide="folder-down" style="width:14px;height:14px;vertical-align:middle;margin-right:6px"></i>PDF Export Save Location</strong>
+          <span class="tag" style="background:var(--soft);color:var(--green);font-weight:700">Auto-Opens in Explorer</span>
+        </div>
+        <p class="help">Choose where exported PDF invoices are saved. Upon downloading a PDF, Windows File Explorer automatically opens with your file highlighted.</p>
+        <div style="margin:8px 0;padding:8px 10px;background:var(--bg);border:1px solid var(--line);border-radius:6px;font-size:11px;word-break:break-all">
+          <span style="color:var(--muted);font-weight:700;font-size:10px">Current Save Folder: </span>
+          <span id="current-export-folder" class="mono" style="font-weight:600;color:var(--text)">${E(this.state.pdfExportFolder||'Default: App Data / Exports')}</span>
+        </div>
+        <div class="inline-actions">
+          <button type="button" class="button-green" data-action="choose-pdf-folder"><i data-lucide="folder"></i>Change Save Folder</button>
+          <button type="button" data-action="open-pdf-folder"><i data-lucide="folder-open"></i>Open Current Folder</button>
+          <button type="button" data-action="reset-pdf-folder"><i data-lucide="rotate-ccw"></i>Reset to Default</button>
         </div>
       </div>
       <div class="field-grid" style="margin-top:14px">

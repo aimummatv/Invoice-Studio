@@ -133,6 +133,103 @@ class Store {
     r.revision=(old?.revision||0)+1;
     const perform=()=>{if(kind==='buyerPrices')this.db.prepare('INSERT INTO buyer_prices(id,revision,product_id,party_id,payload) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,product_id=excluded.product_id,party_id=excluded.party_id,payload=excluded.payload').run(r.id,r.revision,r.productId,r.partyId,bounded(r));else this.db.prepare(`INSERT INTO ${table}(id,revision,payload) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,payload=excluded.payload`).run(r.id,r.revision,bounded(r));this.audit(`${kind}-saved`,r.id,{revision:r.revision});return r;};return withinTransaction?perform():this.tx(perform);
   }
+  autoSyncCatalogueAndParties(d){
+    if(!d)return;
+    const buyerName=String(d.retailerName||'').trim();
+    if(buyerName){
+      try{
+        const parties=this.entities('parties');
+        const existing=parties.find(p=>p.name.trim().toLowerCase()===buyerName.toLowerCase());
+        const cleanGstin=String(d.retailerGstin||'').trim().toUpperCase();
+        const validGstin=C.gstinValid(cleanGstin)?cleanGstin:'';
+        const st=d.placeOfSupply||d.buyerStateCode||'27';
+        const validState=C.STATES[st]?st:'27';
+        if(existing){
+          let changed=false;
+          if(validGstin&&validGstin!==existing.gstin){existing.gstin=validGstin;changed=true;}
+          if(d.billingAddress&&d.billingAddress!==existing.billingAddress){existing.billingAddress=d.billingAddress;changed=true;}
+          if(d.customerPhone&&d.customerPhone!==existing.phone){existing.phone=d.customerPhone;changed=true;}
+          if(validState&&validState!==existing.stateCode){existing.stateCode=validState;changed=true;}
+          if(d.paymentTerms&&d.paymentTerms!==existing.paymentTerms){existing.paymentTerms=d.paymentTerms;changed=true;}
+          if(changed)this.upsertEntity('parties',existing,true);
+          d.retailerId=existing.id;
+        }else{
+          const partyId=d.retailerId||randomUUID();
+          const newParty={
+            id:partyId,
+            revision:0,
+            name:buyerName,
+            gstin:validGstin,
+            stateCode:validState,
+            billingAddress:d.billingAddress||'',
+            shippingAddress:d.shippingAddress||d.billingAddress||'',
+            phone:d.customerPhone||'',
+            email:'',
+            paymentTerms:d.paymentTerms||'Net 15 Days',
+            favourite:false
+          };
+          this.upsertEntity('parties',newParty,true);
+          d.retailerId=partyId;
+        }
+      }catch(err){console.warn('Auto-sync buyer notice:',err.message);}
+    }
+    if(Array.isArray(d.items)){
+      for(const item of d.items){
+        const itemName=String(item.name||'').trim();
+        if(!itemName)continue;
+        try{
+          const products=this.entities('products');
+          const existing=products.find(p=>(item.productId&&p.id===item.productId)||p.name.trim().toLowerCase()===itemName.toLowerCase());
+          const rateStr=item.unitRate!==undefined&&item.unitRate!==''&&!isNaN(Number(item.unitRate))?String(item.unitRate):'0';
+          const hsnStr=item.hsn&&/^\d{4,8}$/.test(String(item.hsn).trim())?String(item.hsn).trim():'';
+          const gstStr=item.gstRate!==undefined&&item.gstRate!==''&&!isNaN(Number(item.gstRate))&&Number(item.gstRate)>=0&&Number(item.gstRate)<=100?String(item.gstRate):'';
+          const unitStr=item.unit?String(item.unit).trim():'NOS';
+          const taxCat=C.TAXABILITIES.includes(item.taxability)?item.taxability:'taxable';
+          const packStr=item.casePack&&Number(item.casePack)>0?String(item.casePack):'1';
+
+          if(existing){
+            let changed=false;
+            if(rateStr!=='0'&&rateStr!==existing.price){existing.price=rateStr;changed=true;}
+            if(hsnStr&&hsnStr!==existing.hsn){existing.hsn=hsnStr;changed=true;}
+            if(gstStr!==''&&gstStr!==existing.gstRate){existing.gstRate=gstStr;changed=true;}
+            if(unitStr&&unitStr!==existing.unit){existing.unit=unitStr;changed=true;}
+            if(taxCat&&taxCat!==existing.taxability){existing.taxability=taxCat;changed=true;}
+            if(packStr&&packStr!==existing.casePack){existing.casePack=packStr;changed=true;}
+            if(changed)this.upsertEntity('products',existing,true);
+            item.productId=existing.id;
+          }else{
+            const prodId=item.productId||randomUUID();
+            const cleanLetters=itemName.replace(/[^a-zA-Z0-9]/g,'').toUpperCase();
+            const baseSku=(item.sku||cleanLetters.slice(0,8)||'PRD').padEnd(3,'0');
+            let sku=baseSku;
+            let counter=1;
+            while(products.some(p=>String(p.sku).toLowerCase()===sku.toLowerCase())){
+              sku=`${baseSku}-${counter++}`;
+            }
+            const newProd={
+              id:prodId,
+              revision:0,
+              name:itemName,
+              sku:sku,
+              hsn:hsnStr,
+              unit:unitStr,
+              price:rateStr,
+              cost:'0',
+              gstRate:gstStr,
+              taxability:taxCat,
+              casePack:packStr,
+              category:'',
+              active:true,
+              favourite:false,
+              verified:false
+            };
+            this.upsertEntity('products',newProd,true);
+            item.productId=prodId;
+          }
+        }catch(err){console.warn('Auto-sync product notice:',err.message);}
+      }
+    }
+  }
   saveDraft(input){
     const d=C.clone(input);delete d.snapshot;delete d.snapshotHash;assertId(d.id);
     if(!C.TYPES.includes(d.documentType))throw Error('Unsupported document type.');
@@ -141,7 +238,12 @@ class Store {
     if(old&&old.status!=='draft')throw Error('Issued documents are immutable. Duplicate into a new draft or issue a credit note.');
     if((old?.revision||0)!==Number(d.revision||0))throw Error('This draft changed in another request. Reload before overwriting it.');
     d.revision=(old?.revision||0)+1;d.status='draft';d.invoiceNumber='';
-    return this.tx(()=>{this.writeDocument(d,null);this.audit('draft-saved',d.id,{revision:d.revision});return this.getDocument(d.id);});
+    return this.tx(()=>{
+      this.autoSyncCatalogueAndParties(d);
+      this.writeDocument(d,null);
+      this.audit('draft-saved',d.id,{revision:d.revision});
+      return this.getDocument(d.id);
+    });
   }
   writeDocument(d,snapshot){
     const now=new Date().toISOString();const text=snapshot?bounded(snapshot):null;
@@ -197,6 +299,7 @@ class Store {
     const profile=this.profile();const d=C.clone(saved);delete d.snapshot;delete d.snapshotHash;
     const issues=C.health(d,profile,this.entities('products'),this.entities('taxRules'));const errors=issues.filter(i=>i.level==='error');if(errors.length)throw Error(errors.map(e=>e.message).join('\n'));
     return this.tx(()=>{
+      this.autoSyncCatalogueAndParties(d);
       if(!d.retailerId){const party=this.upsertEntity('parties',{id:randomUUID(),revision:0,name:d.retailerName,gstin:d.retailerGstin||'',billingAddress:d.billingAddress,shippingAddress:d.shippingAddress||d.billingAddress,stateCode:d.buyerStateCode||d.placeOfSupply,phone:d.customerPhone||'',paymentTerms:d.paymentTerms},true);d.retailerId=party.id;}
       if(!this.entities('parties').some(p=>p.id===d.retailerId))throw Error('The selected customer no longer exists. Select or save the buyer again.');
       const totals=d.documentType==='CREDIT NOTE'?this.creditTotals(d,profile):C.calculate(d,profile);

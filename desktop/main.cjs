@@ -59,7 +59,26 @@ async function saveFile(buffer,options,kind){
   const selected=await dialog.showSaveDialog(mainWindow,options);if(selected.canceled)return null;const filename=selected.filePath;
   const prior=store.db.prepare('SELECT hash FROM export_history WHERE path=? ORDER BY at DESC LIMIT 1').get(filename);
   if(prior&&fs.existsSync(filename)&&digest(fs.readFileSync(filename))!==prior.hash)throw Error('This file changed outside Invoice Studio. Review those edits, then choose a different Save As filename.');
-  const hash=W.atomicExport(filename,buffer);store.db.prepare('INSERT INTO export_history VALUES(?,?,?,?,?)').run(randomUUID(),new Date().toISOString(),filename,hash,kind);lastExport=filename;return{path:filename,hash};
+  const hash=W.atomicExport(filename,buffer);store.db.prepare('INSERT INTO export_history VALUES(?,?,?,?,?)').run(randomUUID(),new Date().toISOString(),filename,hash,kind);lastExport=filename;
+  try{
+    const folderDir=path.dirname(filename);
+    store.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run('lastExportFolder',JSON.stringify(folderDir));
+  }catch(_){}
+  try{
+    shell.showItemInFolder(filename);
+  }catch(e){console.error('Failed to reveal file:',e);}
+  return{path:filename,hash,revealed:true};
+}
+function getPdfExportDir(){
+  try{
+    const cfg=JSON.parse(store.db.prepare('SELECT value FROM settings WHERE key=?').get('pdfExportFolder')?.value||'null');
+    if(cfg&&fs.existsSync(cfg))return cfg;
+    const last=JSON.parse(store.db.prepare('SELECT value FROM settings WHERE key=?').get('lastExportFolder')?.value||'null');
+    if(last&&fs.existsSync(last))return last;
+  }catch(_){}
+  const dir=path.join(store.folder,'Exports');
+  fs.mkdirSync(dir,{recursive:true});
+  return dir;
 }
 function snapshotFor(id){const d=store.getDocument(id);if(!d)throw Error('Document no longer exists.');const snapshot=d.snapshot||{version:1,document:d,profile:store.profile(),totals:d.documentType==='CREDIT NOTE'?store.creditTotals(d,store.profile()):C.calculate(d,store.profile())};return{d,snapshot};}
 async function printWindow(id){
@@ -69,11 +88,11 @@ async function printWindow(id){
   try{await win.loadURL(`studio://app/print/${token}`);await win.webContents.executeJavaScript('document.fonts.ready.then(()=>Promise.all(Array.from(document.images).map(i=>i.complete?Promise.resolve():new Promise(r=>{i.onload=r;i.onerror=r}))))');return{win,token,d};}catch(e){printPages.delete(token);win.destroy();throw e;}
 }
 async function pdfBuffer(id){const {win,token}=await printWindow(id);try{return await win.webContents.printToPDF({printBackground:true,preferCSSPageSize:true,pageSize:'A4',displayHeaderFooter:false,generateTaggedPDF:true,margins:{top:.39,bottom:.67,left:.39,right:.39}});}finally{win.destroy();printPages.delete(token);}}
-async function exportPDF({id,share=false}){const {d}=snapshotFor(id),buffer=await pdfBuffer(id);const dir=path.join(store.folder,'Exports');fs.mkdirSync(dir,{recursive:true});const name=(d.invoiceNumber||`Draft-${d.id.slice(0,8)}`).replace(/[^\w.-]/g,'_')+'.pdf';if(share){const filename=path.join(dir,name);W.atomicExport(filename,buffer);lastExport=filename;shell.showItemInFolder(filename);return{path:filename,manualAttachment:true};}return saveFile(buffer,{title:'Save searchable PDF',defaultPath:path.join(dir,name),filters:[{name:'PDF',extensions:['pdf']}]},'pdf');}
+async function exportPDF({id,share=false}){const {d}=snapshotFor(id),buffer=await pdfBuffer(id);const dir=getPdfExportDir();const name=(d.invoiceNumber||`Draft-${d.id.slice(0,8)}`).replace(/[^\w.-]/g,'_')+'.pdf';if(share){const filename=path.join(dir,name);W.atomicExport(filename,buffer);lastExport=filename;shell.showItemInFolder(filename);return{path:filename,manualAttachment:true};}return saveFile(buffer,{title:'Save searchable PDF',defaultPath:path.join(dir,name),filters:[{name:'PDF',extensions:['pdf']}]},'pdf');}
 function setupAPI(){
   handle('closeReady',async()=>{await store.backup('on-close');closing=true;setImmediate(()=>mainWindow.close());return true;});
   handle('calculateDraft',d=>d.documentType==='CREDIT NOTE'?store.creditTotals(C.clone(d),store.profile()):C.calculate(d,store.profile()));
-  handle('getState',()=>({...store.state(),appVersion:app.getVersion(),desktop:true,portable:!!process.env.PORTABLE_EXECUTABLE_DIR}));
+  handle('getState',()=>({...store.state(),appVersion:app.getVersion(),desktop:true,portable:!!process.env.PORTABLE_EXECUTABLE_DIR,pdfExportFolder:getPdfExportDir()}));
   handle('saveDraft',d=>store.saveDraft(d),{write:true});
   handle('finalise',async d=>{const result=store.finalise(d);if(store.profile().autoExport){try{const buffer=await W.exportWorkbook(store.state());const folder=path.join(store.folder,'Exports');fs.mkdirSync(folder,{recursive:true});W.atomicExport(path.join(folder,'InvoiceStudio-managed.xlsx'),buffer);}catch(e){notice(`Invoice saved. Automatic workbook export failed: ${e.message}`);}}return result;},{write:true});
   handle('saveProfile',p=>store.saveProfile(p),{write:true});handle('saveEntity',({kind,record})=>store.upsertEntity(kind,record),{write:true});
@@ -88,6 +107,10 @@ function setupAPI(){
   handle('exportPDF',exportPDF);handle('print',async({id})=>{const {win,token}=await printWindow(id);return new Promise((resolve,reject)=>{win.webContents.print({silent:false,printBackground:true,pageSize:'A4'},(success,reason)=>{win.destroy();printPages.delete(token);if(!success&&reason!=='cancelled')reject(Error(`Print failed: ${reason}`));else resolve({printed:success});});});});
   handle('openWhatsApp',async({phone,message})=>{if(typeof phone!=='string'||typeof message!=='string'||message.length>10000)throw Error('Invalid WhatsApp request.');const digits=phone.replace(/\D/g,'');if(!/^\d{10,15}$/.test(digits))throw Error('Enter a phone number with country code (10–15 digits).');await shell.openExternal(`https://wa.me/${digits}?text=${encodeURIComponent(message)}`);return true;});
   handle('revealExport',()=>{if(!lastExport||!fs.existsSync(lastExport))throw Error('Export a file first.');shell.showItemInFolder(lastExport);return true;});
+  handle('chooseExportFolder',async()=>{const current=getPdfExportDir();const selected=await dialog.showOpenDialog(mainWindow,{title:'Choose default folder for PDF exports',defaultPath:current,properties:['openDirectory','createDirectory']});if(selected.canceled)return null;const folder=selected.filePaths[0];fs.accessSync(folder,fs.constants.W_OK);store.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run('pdfExportFolder',JSON.stringify(folder));return{folder};});
+  handle('getExportFolder',()=>({folder:getPdfExportDir(),custom:!!store.db.prepare('SELECT value FROM settings WHERE key=?').get('pdfExportFolder')?.value}));
+  handle('openExportFolder',async()=>{const folder=getPdfExportDir();await shell.openPath(folder);return{folder};});
+  handle('resetExportFolder',()=>{store.db.prepare('DELETE FROM settings WHERE key=?').run('pdfExportFolder');return{folder:getPdfExportDir()};});
   handle('history',()=>store.history());handle('stock',()=>store.stock());handle('adjustStock',p=>store.adjustStock(p),{write:true});
   handle('secondaryBackup',async()=>{const selected=await dialog.showOpenDialog(mainWindow,{title:'Choose a secondary backup folder',properties:['openDirectory','createDirectory']});if(selected.canceled)return null;const folder=selected.filePaths[0];fs.accessSync(folder,fs.constants.W_OK);store.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run('secondaryBackupFolder',JSON.stringify(folder));await store.backup('secondary-folder-test');return{folder};});
   handle('changeDataFolder',async()=>{const selected=await dialog.showOpenDialog(mainWindow,{title:'Move database to a writable data folder',properties:['openDirectory','createDirectory']});if(selected.canceled)return null;const dest=path.resolve(selected.filePaths[0]);if(dest===store.folder)return{folder:dest};fs.accessSync(dest,fs.constants.W_OK);const filename=path.join(dest,'InvoiceStudio.db');if(fs.existsSync(filename))throw Error('The selected folder already contains a database. Use Restore to review it, or select an empty folder.');await store.backup('before-data-folder-move');const stage=path.join(dest,`move-${randomUUID()}.db`);const {backup}=require('node:sqlite');await backup(store.db,stage);fs.renameSync(stage,filename);const probe=new Store(dest,{mustExist:true});probe.verify();probe.close();store.close();store=new Store(dest,{mustExist:true});saveConfig({folder:dest});store.audit('data-folder-moved','business',{});return{folder:dest};});
