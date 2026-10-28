@@ -64,7 +64,19 @@ class Store {
   }
   tx(fn) { this.db.exec('BEGIN IMMEDIATE');try{const out=fn();this.db.exec('COMMIT');return out;}catch(e){this.db.exec('ROLLBACK');throw Error(errorMessage(e));} }
   audit(kind,id,payload={}){this.db.prepare('INSERT INTO audit_events VALUES(?,?,?,?,?)').run(randomUUID(),new Date().toISOString(),kind,id,bounded(payload));}
-  profile(){return parse(this.db.prepare('SELECT payload FROM business_profiles WHERE id=?').get('business').payload);}
+  profile(){
+    const row = this.db.prepare('SELECT payload FROM business_profiles WHERE id=?').get('business');
+    if(!row) return C.emptyProfile();
+    const p = parse(row.payload);
+    const def = C.emptyProfile();
+    if(!p.invoiceNotes || !p.invoiceNotes.trim()) p.invoiceNotes = def.invoiceNotes;
+    if(p.legalName === 'Amrit Ras Consumer Products LLP') p.legalName = def.legalName;
+    if(!p.brandName) p.brandName = def.brandName;
+    if(p.logoData === undefined) p.logoData = '';
+    if(p.pan === undefined) p.pan = def.pan;
+    if(p.tagline === undefined) p.tagline = def.tagline;
+    return p;
+  }
   entities(kind){const table=ENTITY_TABLES[kind];if(!table)throw Error('Unsupported collection.');return this.db.prepare(`SELECT payload FROM ${table} ORDER BY rowid`).all().map(r=>parse(r.payload));}
   getDocument(id){assertId(id);const r=this.db.prepare('SELECT * FROM documents WHERE id=?').get(id);return r?{...parse(r.payload),id:r.id,revision:r.revision,status:r.status,invoiceNumber:r.invoice_number||'',documentType:r.document_type,date:r.date,snapshot:parse(r.snapshot),snapshotHash:r.snapshot_hash}:null;}
   state(){

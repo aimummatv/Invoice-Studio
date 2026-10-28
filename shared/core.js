@@ -1,5 +1,9 @@
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('decimal.js'));
+  if (typeof module === 'object' && module.exports) {
+    let Decimal;
+    try { Decimal = require('decimal.js'); } catch { Decimal = require('../lib/decimal.js'); }
+    module.exports = factory(Decimal);
+  }
   else root.StudioCore = factory(root.Decimal);
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (Decimal) {
   'use strict';
@@ -35,7 +39,11 @@
     for(let i=13;i>=0;i--){const p=chars.indexOf(s[i])*factor;sum+=Math.floor(p/36)+p%36;factor=factor===2?1:2;}
     return chars[(36-sum%36)%36]===s[14];
   }
-  function emptyProfile() { return { id:'business', brandName:'Magic Roots', legalName:'Amrit Ras Consumer Products LLP', address:'', city:'', stateCode:'27', pincode:'', gstin:'', registered:true, composition:false, phone:'', email:'', fssai:'', bankName:'', accountNumber:'', ifsc:'', upiId:'', invoiceNotes:'', prefix:'MR', defaultTerms:'Net 15 Days', defaultRate:'', ewayThreshold:'50000', einvoiceApplicable:false, stockEnabled:false, backupRetention:30, autoExport:false, secondaryBackupEnabled:false, currency:'INR', revision:0 }; }
+  const DEFAULT_TERMS = `E.& O.E.
+1. Goods once sold will not be taken back.
+2. Interest @ 18% p.a. will be charged if the payment is not made with in the stipulated time.
+3. Subject to 'Delhi' Jurisdiction only.`;
+  function emptyProfile() { return { id:'business', brandName:'Magic Roots', legalName:'Magic Roots Enterprises', tagline:'Pure & Natural', address:'Unit 14, Sunrise Industrial Estate, Kanjurmarg West', city:'Mumbai', stateCode:'27', pincode:'400078', gstin:'27AAACA9876Q1ZM', pan:'AAACA9876Q', registered:true, composition:false, phone:'+91 98201 44552', email:'billing@magicroots.in', fssai:'11523998000421', bankName:'HDFC Bank Ltd', accountNumber:'50200088991122', ifsc:'HDFC0000128', upiId:'magicroots@hdfcbank', logoData:'', invoiceNotes:DEFAULT_TERMS, prefix:'MR', defaultTerms:'Net 15 Days', defaultRate:'', ewayThreshold:'50000', einvoiceApplicable:false, stockEnabled:false, backupRetention:30, autoExport:false, secondaryBackupEnabled:false, currency:'INR', revision:0 }; }
   function defaultAppearance(preset='Detailed') {
     return { preset, bank:true, terms:true, transport:preset==='Transport', shipTo:preset!=='Simple', batch:false, hsnSummary:preset!=='Simple', words:true, discount:preset!=='Simple', balance:true, signature:true, qr:true, cases:preset==='Transport', density:'normal', copyLabel:'Original for Recipient', copies:1, showHsn:true };
   }
@@ -203,5 +211,5 @@
     const parties=new Map();for(const row of ledger.values()){const key=row.partyId||row.party;if(!parties.has(key))parties.set(key,{party:row.party,outstanding:0,Current:0,'1–30':0,'31–60':0,'61–90':0,'90+':0});parties.get(key).outstanding+=row.outstanding;parties.get(key)[row.bucket]+=row.outstanding;}
     return {turnover,tax,recipientTax,outstanding:[...ledger.values()].reduce((s,r)=>s+r.outstanding,0),monthly:[...monthly.values()].sort((a,b)=>a.month.localeCompare(b.month)),hsn:[...hsn.values()],ledger:[...ledger.values()],parties:[...parties.values()]};
   }
-  return {TYPES,SERIES,STATES,TAXABILITIES,TREATMENTS,clone,dateToday,validDate,addDays,dueDate,fy,decimal,cents,money,gstinValid,emptyProfile,defaultAppearance,newDraft,newLine,allocate,calculate,health,suggestTax,numberWords,reports};
+  return {TYPES,SERIES,STATES,TAXABILITIES,TREATMENTS,DEFAULT_TERMS,clone,dateToday,validDate,addDays,dueDate,fy,decimal,cents,money,gstinValid,emptyProfile,defaultAppearance,newDraft,newLine,allocate,calculate,health,suggestTax,numberWords,reports};
 });

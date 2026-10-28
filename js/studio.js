@@ -4,7 +4,12 @@ const C=window.StudioCore,V=window.InvoiceView,E=V.escape,$=id=>document.getElem
 const btn=(label,action,extra='',cls='')=>`<button type="button" data-action="${action}" ${extra} class="${cls}">${label}</button>`;
 const options=(items,value,blank='Choose…')=>`${blank!==null?`<option value="">${E(blank)}</option>`:''}${items.map(x=>{const [id,label]=Array.isArray(x)?x:[x,x];return`<option value="${E(id)}" ${String(id)===String(value)?'selected':''}>${E(label)}</option>`;}).join('')}`;
 const stateOptions=value=>options(Object.entries(C.STATES).map(([id,label])=>[id,`${id} · ${label}`]),value);
-function field(label,key,value,{type='text',full=false,choices=null,named=false,help='',readonly=false}={}){const attrs=named?`name="${E(key)}"`:`data-field="${E(key)}"`;const id='f-'+key.replace(/\W/g,'-');return`<div class="field ${full?'full':''}"><label for="${id}">${E(label)}</label>${choices?`<select id="${id}" ${attrs} ${readonly?'disabled':''}>${options(choices,value)}</select>`:type==='textarea'?`<textarea id="${id}" ${attrs} ${readonly?'readonly':''}>${E(value)}</textarea>`:`<input id="${id}" ${attrs} type="${type}" value="${E(value)}" ${type==='number'?'step="0.000001"':''} ${readonly?'readonly':''}>`}${help?`<span class="help">${E(help)}</span>`:''}</div>`;}
+const TRANSPORT_PRESETS=[
+  {name:'Western Logistics',vehicle:'MH-04-AB-1234',driver:'Rajesh Kumar',lr:'WL-9821'},
+  {name:'VRL Logistics',vehicle:'KA-25-C-5678',driver:'Suresh Patil',lr:'VRL-4402'},
+  {name:'Local Delivery / Self',vehicle:'MH-03-CD-9012',driver:'Amit Sharma',lr:'DIR-105'}
+];
+function field(label,key,value,{type='text',full=false,choices=null,named=false,help='',readonly=false,list=null}={}){const attrs=named?`name="${E(key)}"`:`data-field="${E(key)}"`;const id='f-'+key.replace(/\W/g,'-');const listAttr=list?`list="${E(list)}"`:'';return`<div class="field ${full?'full':''}"><label for="${id}">${E(label)}</label>${choices?`<select id="${id}" ${attrs} ${readonly?'disabled':''}>${options(choices,value)}</select>`:type==='textarea'?`<textarea id="${id}" ${attrs} ${readonly?'readonly':''}>${E(value)}</textarea>`:`<input id="${id}" ${attrs} ${listAttr} type="${type}" value="${E(value)}" ${type==='number'?'step="0.000001"':''} ${readonly?'readonly':''}>`}${help?`<span class="help">${E(help)}</span>`:''}</div>`;}
 function check(label,key,value,named=false){return`<label class="check-field"><input type="checkbox" ${named?`name="${E(key)}"`:`data-field="${E(key)}"`} ${value?'checked':''}>${E(label)}</label>`;}
 function formValues(form){const result={};for(const el of form.elements){if(!el.name)continue;result[el.name]=el.type==='checkbox'?el.checked:el.value;}return result;}
 const table=(headers,rows)=>rows.length?`<div class="table-scroll"><table class="data-table"><thead><tr>${headers.map(h=>`<th>${E(h)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`:'<div class="empty">No records yet.</div>';
@@ -22,7 +27,7 @@ class InvoiceStudioApp{
   bind(){
     document.addEventListener('click',event=>{const el=event.target.closest('[data-action]');if(!el||el.disabled)return;event.preventDefault();this.action(el.dataset.action,el).catch(e=>{this.busy=false;this.notice(e.message);this.toast(e.message);});});
     document.addEventListener('input',event=>{const el=event.target;if(el.dataset.field)this.edit(el);if(el.id==='register-search'||el.id==='register-filter')this.filterRegister();});
-    document.addEventListener('change',event=>{const el=event.target;if(el.dataset.field&&['checkbox','select-one'].includes(el.type))this.edit(el);if(el.id==='document-select')this.openDocument(el.value).catch(e=>this.notice(e.message));if(el.id==='catalogue-select')this.addProduct(el.value);if(el.id==='buyer-select')this.chooseBuyer(el.value);if(el.id==='register-filter')this.filterRegister();if(el.id==='preset-select')this.applyPreset(el.value);if(el.id==='payment-party')this.paymentAllocationFields(el.value);if(el.id==='price-product')this.priceSuggestions(el.value);});
+    document.addEventListener('change',event=>{const el=event.target;if(el.id==='logo-file-picker')this.handleLogoFile(el);if(el.dataset.field&&['checkbox','select-one'].includes(el.type))this.edit(el);if(el.id==='document-select')this.openDocument(el.value).catch(e=>this.notice(e.message));if(el.id==='catalogue-select')this.addProduct(el.value);if(el.id==='buyer-select')this.chooseBuyer(el.value);if(el.id==='register-filter')this.filterRegister();if(el.id==='preset-select')this.applyPreset(el.value);if(el.id==='payment-party')this.paymentAllocationFields(el.value);if(el.id==='price-product')this.priceSuggestions(el.value);});
     document.addEventListener('submit',event=>{event.preventDefault();if(this.submitting)return;this.submitting=true;const button=event.target.querySelector('[type=submit]');if(button)button.disabled=true;this.submit(event.target).catch(e=>{this.notice(e.message);this.toast(e.message);}).finally(()=>{this.submitting=false;if(button)button.disabled=false;});});
     document.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();this.flush(true).catch(e=>this.notice(e.message));}if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='p'){event.preventDefault();this.action('print').catch(e=>this.notice(e.message));}if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='z'&&!['INPUT','TEXTAREA'].includes(event.target.tagName)){event.preventDefault();this.undo();}});
     $('app-dialog').addEventListener('cancel',()=>{this.currentDialog='';});
@@ -41,6 +46,32 @@ class InvoiceStudioApp{
     const before=C.clone(this.draft);let target=this.draft;for(const key of keys.slice(0,-1)){if(!target[key])target[key]={};target=target[key];}const key=keys.at(-1),value=el.type==='checkbox'?el.checked:el.value;target[key]=value;
     if(el.dataset.field==='date'||el.dataset.field==='paymentTerms'){if(!this.draft.dueDateOverride)this.draft.dueDate=C.dueDate(this.draft.date,this.draft.paymentTerms);const due=$('f-dueDate');if(due)due.value=this.draft.dueDate;}
     if(el.dataset.field==='dueDate')this.draft.dueDateOverride=true;
+    if(el.dataset.field==='retailerName'){
+      const party=this.state.parties.find(x=>x.name.trim().toLowerCase()===String(el.value||'').trim().toLowerCase());
+      if(party){
+        this.draft.retailerId=party.id;this.draft.retailerGstin=party.gstin||'';this.draft.customerPhone=party.phone||'';this.draft.billingAddress=party.billingAddress||'';this.draft.shippingAddress=party.shippingAddress||party.billingAddress||'';this.draft.buyerStateCode=party.stateCode||'';if(party.stateCode)this.draft.placeOfSupply=party.stateCode;if(party.paymentTerms)this.draft.paymentTerms=party.paymentTerms;if(!this.draft.dueDateOverride)this.draft.dueDate=C.dueDate(this.draft.date,this.draft.paymentTerms);
+        const g=$('f-retailerGstin');if(g)g.value=this.draft.retailerGstin;const p=$('f-customerPhone');if(p)p.value=this.draft.customerPhone;const b=$('f-billingAddress');if(b)b.value=this.draft.billingAddress;const s=$('f-shippingAddress');if(s)s.value=this.draft.shippingAddress;const pos=$('f-placeOfSupply');if(pos)pos.value=this.draft.placeOfSupply;const bSel=$('buyer-select');if(bSel)bSel.value=party.id;
+      }
+    }
+    if(el.dataset.field&&el.dataset.field.startsWith('items.')&&el.dataset.field.endsWith('.name')){
+      const prod=this.state.products.find(x=>x.name.trim().toLowerCase()===String(el.value||'').trim().toLowerCase());
+      if(prod){
+        const idx=Number(el.dataset.field.split('.')[1]);const it=this.draft.items[idx];
+        if(it){
+          it.productId=prod.id;it.hsn=String(prod.hsn||it.hsn);it.unit=prod.unit||it.unit;it.unitRate=String(prod.price??it.unitRate);it.gstRate=String(prod.gstRate??it.gstRate);it.taxability=prod.taxability||it.taxability;it.casePack=String(prod.casePack||it.casePack);
+          const bp=this.state.buyerPrices.find(b=>b.partyId===this.draft.retailerId&&b.productId===prod.id);if(bp)it.unitRate=bp.price;
+          const rule=this.state.taxRules.filter(r=>(r.productId===prod.id||(!r.productId&&r.hsn===prod.hsn))&&r.effectiveFrom<=this.draft.date&&(!r.effectiveTo||r.effectiveTo>=this.draft.date));if(rule.length===1){it.gstRate=rule[0].rate;it.verified=rule[0].verified;it.source=rule[0].source;}
+          const rEl=document.querySelector(`[data-field="items.${idx}.unitRate"]`);if(rEl)rEl.value=it.unitRate;const hEl=document.querySelector(`[data-field="items.${idx}.hsn"]`);if(hEl)hEl.value=it.hsn;const uEl=document.querySelector(`[data-field="items.${idx}.unit"]`);if(uEl)uEl.value=it.unit;const gEl=document.querySelector(`[data-field="items.${idx}.gstRate"]`);if(gEl)gEl.value=it.gstRate;const tEl=document.querySelector(`[data-field="items.${idx}.taxability"]`);if(tEl)tEl.value=it.taxability;
+        }
+      }
+    }
+    if(el.dataset.field==='transporterName'){
+      const tr=TRANSPORT_PRESETS.find(x=>x.name.trim().toLowerCase()===String(el.value||'').trim().toLowerCase());
+      if(tr){
+        this.draft.vehicleNumber=tr.vehicle;this.draft.driverName=tr.driver;this.draft.lrNumber=tr.lr;
+        const vEl=$('f-vehicleNumber');if(vEl)vEl.value=tr.vehicle;const dEl=$('f-driverName');if(dEl)dEl.value=tr.driver;const lEl=$('f-lrNumber');if(lEl)lEl.value=tr.lr;
+      }
+    }
     if(el.dataset.field.endsWith('.gstRate')||el.dataset.field.endsWith('.hsn')){target.verified=false;}
     this.changed(before);
     if(el.dataset.field.startsWith('appearance.')&&el.type==='checkbox')this.renderPreview();
@@ -64,18 +95,28 @@ class InvoiceStudioApp{
   renderSteps(){const names=['Document details','Buyer & supply',this.draft.documentType==='ADVANCE RECEIPT'?'Payment received':'Line items','Transport & batch','Bank & terms','Invoice health'];$('step-nav').innerHTML=names.map((s,i)=>btn(`<span class="step-number">${i+1}</span>${E(s)}`,'step',`data-step="${i}"`,this.step===i?'active':'')).join('');}
   renderEditor(){
     const d=this.draft,p=this.state.profile,locked=d.status!=='draft';const headings=['Document details','Buyer & Place of Supply',d.documentType==='ADVANCE RECEIPT'?'Record an advance payment':'Products & calculations','Transport & traceability','Banking & terms','Review before issuing'];const sub=['Numbers are allocated once, when you issue the document.','GSTIN state is a suggestion. Confirm the actual Place of Supply.','Amounts update per line using decimal arithmetic and paise rounding.','Add only details that apply to this supply.','Issued documents retain the business and bank details used at issue.','Resolve blocking errors. Review warnings against your business requirements.'];
-    $('editor-heading').innerHTML=`<p class="section-eyebrow">STEP ${this.step+1} OF 6</p><h2>${headings[this.step]}</h2><p>${sub[this.step]}</p>`;
+    let favButtons='';
+    if(this.step===1&&!locked){
+      const favs=this.state.parties.filter(x=>x.favourite);
+      const pool=(favs.length?favs:this.state.parties).slice(0,3);
+      if(pool.length){
+        favButtons=`<div class="step-quick-favorites"><span class="fav-chip-label"><i data-lucide="star"></i> Favorites:</span>${pool.map(b=>`<button type="button" class="quick-chip" data-action="pick-step-buyer" data-id="${E(b.id)}" title="Autofill ${E(b.name)}">${E(b.name)}</button>`).join('')}</div>`;
+      }
+    } else if(this.step===3&&!locked){
+      favButtons=`<div class="step-quick-favorites"><span class="fav-chip-label"><i data-lucide="truck"></i> Favorites:</span>${TRANSPORT_PRESETS.map((t,i)=>`<button type="button" class="quick-chip" data-action="pick-step-transport" data-index="${i}" title="Autofill ${E(t.name)}">${E(t.name)}</button>`).join('')}</div>`;
+    }
+    $('editor-heading').innerHTML=`<div class="editor-heading-row"><div class="editor-heading-titles"><p class="section-eyebrow">STEP ${this.step+1} OF 6</p><h2>${headings[this.step]}</h2><p>${sub[this.step]}</p></div>${favButtons}</div>`;
     let html=locked?`<div class="readonly-banner">${d.status==='cancelled'?'Cancelled reference document.':'Issued snapshot. Changes to settings or catalogue will not rewrite this document.'}<div class="inline-actions" style="margin-top:10px">${btn('Duplicate into new draft','duplicate')}${['PROFORMA INVOICE','DELIVERY CHALLAN'].includes(d.documentType)?btn('Convert to tax invoice','convert'):''}${['TAX INVOICE','BILL OF SUPPLY'].includes(d.documentType)&&d.status==='finalised'?btn('Create partial credit note','credit'):''}${d.status==='finalised'?btn('Cancel document','cancel','','button-danger'):''}</div></div>`:'';
     let content='';
     if(this.step===0)content=`<div class="field-grid">${field('Document number','invoiceNumber',d.invoiceNumber||'Allocated on issue',{readonly:true,full:true})}${field('Document date','date',d.date,{type:'date'})}${field('Payment terms','paymentTerms',d.paymentTerms)}${field('Due date','dueDate',d.dueDate,{type:'date'})}${check('Keep this due date override','dueDateOverride',d.dueDateOverride)}${field('Supply date (if different)','supplyDate',d.supplyDate||'',{type:'date'})}${field('Payment date (tax timing review)','paymentDate',d.paymentDate||'',{type:'date'})}</div><div class="card"><div class="card-title">Document behaviour</div><p class="help">Draft / issued / cancelled are independent from payment status. Record payments in the payment register. Proforma and delivery challans do not count as sales.</p>${d.documentType==='CREDIT NOTE'?`<p class="help">Select an issued invoice in the register and choose Create partial credit note. Credits preserve the original tax and price.</p>`:''}${d.originalInvoiceNumber?`<p class="help">Against ${E(d.originalInvoiceNumber)}</p>${field('Credit reason','creditReason',d.creditReason,{full:true,type:'textarea'})}${check('Goods returned to stock','returnToStock',d.returnToStock)}`:''}</div>`;
-    if(this.step===1)content=`<div class="field-grid"><div class="field full"><label for="buyer-select">Choose a saved customer</label><select id="buyer-select"><option value="">Manual buyer / select…</option>${this.state.parties.map(x=>`<option value="${E(x.id)}" ${d.retailerId===x.id?'selected':''}>${E(x.name)}</option>`).join('')}</select></div>${field('Buyer name','retailerName',d.retailerName,{full:true})}${field('GSTIN (blank for unregistered)','retailerGstin',d.retailerGstin,{help:'Offline format/checksum validation only.'})}${field('Phone with country code','customerPhone',d.customerPhone)}${field('Billing address','billingAddress',d.billingAddress,{type:'textarea',full:true})}${field('Shipping address','shippingAddress',d.shippingAddress,{type:'textarea',full:true})}<div class="full">${btn('Copy billing to shipping','copy-address')}</div>${field('Place of Supply','placeOfSupply',d.placeOfSupply,{choices:Object.entries(C.STATES).map(([k,v])=>[k,`${k} · ${v}`]),full:true})}${field('Supply treatment','supplyTreatment',d.supplyTreatment,{choices:[['domestic','Domestic'],['exportLUT','Export under LUT/bond'],['exportTax','Export with tax'],['SEZLUT','SEZ under LUT/bond'],['SEZTax','SEZ with tax']]})}${check('Reverse charge applies','reverseCharge',d.reverseCharge)}${field('LUT / bond reference','lutReference',d.lutReference||'',{full:true})}</div><div class="card"><p class="help">Online GST registration lookup is unavailable. Enter the legal name/address from a verified source.</p>${btn('Save buyer to customer directory','save-buyer')}</div>`;
+    if(this.step===1)content=`<datalist id="buyer-datalist">${this.state.parties.map(x=>`<option value="${E(x.name)}">${E(x.gstin?x.gstin+' · ':'')}${E(C.STATES[x.stateCode]||'')}</option>`).join('')}</datalist><div class="field-grid"><div class="field full"><label for="buyer-select">Choose a saved customer</label><select id="buyer-select"><option value="">Manual buyer / select…</option>${this.state.parties.map(x=>`<option value="${E(x.id)}" ${d.retailerId===x.id?'selected':''}>${E(x.name)}</option>`).join('')}</select></div>${field('Buyer name','retailerName',d.retailerName,{full:true,list:'buyer-datalist'})}${field('GSTIN (blank for unregistered)','retailerGstin',d.retailerGstin,{help:'Offline format/checksum validation only.'})}${field('Phone with country code','customerPhone',d.customerPhone)}${field('Billing address','billingAddress',d.billingAddress,{type:'textarea',full:true})}${field('Shipping address','shippingAddress',d.shippingAddress,{type:'textarea',full:true})}<div class="full">${btn('Copy billing to shipping','copy-address')}</div>${field('Place of Supply','placeOfSupply',d.placeOfSupply,{choices:Object.entries(C.STATES).map(([k,v])=>[k,`${k} · ${v}`]),full:true})}${field('Supply treatment','supplyTreatment',d.supplyTreatment,{choices:[['domestic','Domestic'],['exportLUT','Export under LUT/bond'],['exportTax','Export with tax'],['SEZLUT','SEZ under LUT/bond'],['SEZTax','SEZ with tax']]})}${check('Reverse charge applies','reverseCharge',d.reverseCharge)}${field('LUT / bond reference','lutReference',d.lutReference||'',{full:true})}</div><div class="card"><p class="help">Online GST registration lookup is unavailable. Enter the legal name/address from a verified source.</p>${btn('Save buyer to customer directory','save-buyer')}</div>`;
     if(this.step===2&&d.documentType==='ADVANCE RECEIPT')content=`<div class="field-grid">${field('Amount actually received (₹)','amountReceived',d.amountReceived,{type:'number',full:true})}${field('Payment method','paymentMode',d.paymentMode,{choices:['UPI','Bank Transfer','Cash','Cheque','Card','Other']})}${field('UTR / reference','utrNumber',d.utrNumber)}</div><div class="card help">Issuing this receipt creates one payment entry. Allocate it to one or more issued invoices in Payments. GST time-of-supply treatment for advances requires separate review.</div>`;
     if(this.step===2&&d.documentType!=='ADVANCE RECEIPT'){
-      content=`${d.documentType!=='CREDIT NOTE'?`<div class="toolbar"><select id="catalogue-select"><option value="">Add product from catalogue…</option>${this.state.products.filter(x=>x.active!==false).sort((a,b)=>Number(b.favourite)-Number(a.favourite)).map(x=>`<option value="${E(x.id)}">${x.favourite?'★ ':''}${E(x.name)} · ${E(x.sku)}</option>`).join('')}</select>${btn('+ Blank line','add-line','','button-green')}</div>`:'<p class="help">Enter only the quantities being credited. Prices, rates and original tax components are protected at issue.</p>'}`;
-      content+=d.items.map((l,i)=>`<div class="card line-card"><div class="card-title"><span>${i+1}. ${E(l.name||'New product')}</span>${d.documentType!=='CREDIT NOTE'?btn('Remove','remove-line',`data-index="${i}"`):'<span class="tag">Original rates</span>'}</div><div class="field-grid">${field('Description',`items.${i}.name`,l.name,{type:'textarea',full:true,readonly:d.documentType==='CREDIT NOTE'})}${field('HSN / SAC',`items.${i}.hsn`,l.hsn,{readonly:d.documentType==='CREDIT NOTE'})}${field('Unit',`items.${i}.unit`,l.unit)}${field(d.documentType==='CREDIT NOTE'?'Quantity to credit':'Quantity',`items.${i}.quantity`,l.quantity,{type:'number'})}${field('Unit price (₹)',`items.${i}.unitRate`,l.unitRate,{type:'number',readonly:d.documentType==='CREDIT NOTE'})}${field('GST rate (%)',`items.${i}.gstRate`,l.gstRate,{type:'number',readonly:d.documentType==='CREDIT NOTE'})}${field('Tax category',`items.${i}.taxability`,l.taxability,{choices:[['taxable','Taxable'],['nil','Nil-rated'],['exempt','Exempt'],['nonGST','Non-GST']],readonly:d.documentType==='CREDIT NOTE'})}${field('Discount (%)',`items.${i}.discountPercent`,l.discountPercent||'0',{type:'number',readonly:d.documentType==='CREDIT NOTE'})}${field('Cess (%)',`items.${i}.cessRate`,l.cessRate||'0',{type:'number',readonly:d.documentType==='CREDIT NOTE'})}${check('Price includes tax',`items.${i}.inclusive`,l.inclusive)}${field('Units per case',`items.${i}.casePack`,l.casePack||'1',{type:'number'})}</div><p class="help">${l.verified?'Verified classification in this draft snapshot.':'Suggested / unverified — review HSN, rate and effective dates.'}</p>${d.documentType!=='CREDIT NOTE'?`<div class="inline-actions">${btn('Tax suggestions','suggest-tax',`data-index="${i}"`)}${btn('Remember for this product','remember-product',`data-index="${i}"`)}</div>`:''}</div>`).join('');
+      content=`<datalist id="product-datalist">${this.state.products.filter(x=>x.active!==false).map(x=>`<option value="${E(x.name)}">${E(x.sku?x.sku+' · ':'')}₹${E(x.price)}</option>`).join('')}</datalist>${d.documentType!=='CREDIT NOTE'?`<div class="toolbar"><select id="catalogue-select"><option value="">Add product from catalogue…</option>${this.state.products.filter(x=>x.active!==false).sort((a,b)=>Number(b.favourite)-Number(a.favourite)).map(x=>`<option value="${E(x.id)}">${x.favourite?'★ ':''}${E(x.name)} · ${E(x.sku)}</option>`).join('')}</select>${btn('+ Blank line','add-line','','button-green')}</div>`:'<p class="help">Enter only the quantities being credited. Prices, rates and original tax components are protected at issue.</p>'}`;
+      content+=d.items.map((l,i)=>`<div class="card line-card"><div class="card-title"><span>${i+1}. ${E(l.name||'New product')}</span>${d.documentType!=='CREDIT NOTE'?btn('Remove','remove-line',`data-index="${i}"`):'<span class="tag">Original rates</span>'}</div><div class="field-grid">${field('Description',`items.${i}.name`,l.name,{type:'textarea',full:true,readonly:d.documentType==='CREDIT NOTE',list:'product-datalist'})}${field('HSN / SAC',`items.${i}.hsn`,l.hsn,{readonly:d.documentType==='CREDIT NOTE'})}${field('Unit',`items.${i}.unit`,l.unit)}${field(d.documentType==='CREDIT NOTE'?'Quantity to credit':'Quantity',`items.${i}.quantity`,l.quantity,{type:'number'})}${field('Unit price (₹)',`items.${i}.unitRate`,l.unitRate,{type:'number',readonly:d.documentType==='CREDIT NOTE'})}${field('GST rate (%)',`items.${i}.gstRate`,l.gstRate,{type:'number',readonly:d.documentType==='CREDIT NOTE'})}${field('Tax category',`items.${i}.taxability`,l.taxability,{choices:[['taxable','Taxable'],['nil','Nil-rated'],['exempt','Exempt'],['nonGST','Non-GST']],readonly:d.documentType==='CREDIT NOTE'})}${field('Discount (%)',`items.${i}.discountPercent`,l.discountPercent||'0',{type:'number',readonly:d.documentType==='CREDIT NOTE'})}${field('Cess (%)',`items.${i}.cessRate`,l.cessRate||'0',{type:'number',readonly:d.documentType==='CREDIT NOTE'})}${check('Price includes tax',`items.${i}.inclusive`,l.inclusive)}${field('Units per case',`items.${i}.casePack`,l.casePack||'1',{type:'number'})}</div><p class="help">${l.verified?'Verified classification in this draft snapshot.':'Suggested / unverified — review HSN, rate and effective dates.'}</p>${d.documentType!=='CREDIT NOTE'?`<div class="inline-actions">${btn('Tax suggestions','suggest-tax',`data-index="${i}"`)}${btn('Remember for this product','remember-product',`data-index="${i}"`)}</div>`:''}</div>`).join('');
       if(d.documentType!=='CREDIT NOTE')content+=`<div class="card"><div class="card-title">Document adjustments</div><div class="field-grid">${field('Discount on all lines (%)','discountPercent',d.discountPercent,{type:'number'})}${field('Freight, before tax (₹)','freight',d.freight,{type:'number'})}${field('Packing, before tax (₹)','packing',d.packing,{type:'number'})}${field('Explicit round-off (₹)','roundOff',d.roundOff,{type:'number'})}</div><p class="help">Charges allocate across line values. Inclusive prices include the line GST/cess; freight and packing are exclusive. Rounding is half-up per tax component.</p></div>`;
     }
-    if(this.step===3)content=`<div class="field-grid">${field('Transporter','transporterName',d.transporterName)}${field('LR / consignment no.','lrNumber',d.lrNumber)}${field('Vehicle no.','vehicleNumber',d.vehicleNumber)}${field('Driver name','driverName',d.driverName)}${field('E-way bill reference','ewayBillNumber',d.ewayBillNumber,{full:true})}${field('IRN (externally generated)','irn',d.irn||'',{full:true})}${field('Acknowledgment number','ackNumber',d.ackNumber||'')}${field('Acknowledgment date','ackDate',d.ackDate||'',{type:'date'})}${field('Shipping bill / export reference','shippingBill',d.shippingBill||'')}${field('Export port','exportPort',d.exportPort||'')}</div><p class="help">IRN and e-way generation services are not configured. These fields record references generated through a separate authorised service.</p>${d.items.map((l,i)=>`<div class="card"><div class="card-title">${E(l.name||'Line '+(i+1))}</div><div class="field-grid">${field('Batch / lot',`items.${i}.batch`,l.batch||'')}${field('Licence reference',`items.${i}.licence`,l.licence||'')}${field('Manufactured on',`items.${i}.mfgDate`,l.mfgDate||'',{type:'date'})}${field('Expiry date',`items.${i}.expiryDate`,l.expiryDate||'',{type:'date'})}</div></div>`).join('')}`;
+    if(this.step===3)content=`<datalist id="transporter-datalist">${TRANSPORT_PRESETS.map(t=>`<option value="${E(t.name)}">${E(t.vehicle)}</option>`).join('')}</datalist><div class="field-grid">${field('Transporter','transporterName',d.transporterName,{list:'transporter-datalist'})}${field('LR / consignment no.','lrNumber',d.lrNumber)}${field('Vehicle no.','vehicleNumber',d.vehicleNumber)}${field('Driver name','driverName',d.driverName)}${field('E-way bill reference','ewayBillNumber',d.ewayBillNumber,{full:true})}${field('IRN (externally generated)','irn',d.irn||'',{full:true})}${field('Acknowledgment number','ackNumber',d.ackNumber||'')}${field('Acknowledgment date','ackDate',d.ackDate||'',{type:'date'})}${field('Shipping bill / export reference','shippingBill',d.shippingBill||'')}${field('Export port','exportPort',d.exportPort||'')}</div><p class="help">IRN and e-way generation services are not configured. These fields record references generated through a separate authorised service.</p>${d.items.map((l,i)=>`<div class="card"><div class="card-title">${E(l.name||'Line '+(i+1))}</div><div class="field-grid">${field('Batch / lot',`items.${i}.batch`,l.batch||'')}${field('Licence reference',`items.${i}.licence`,l.licence||'')}${field('Manufactured on',`items.${i}.mfgDate`,l.mfgDate||'',{type:'date'})}${field('Expiry date',`items.${i}.expiryDate`,l.expiryDate||'',{type:'date'})}</div></div>`).join('')}`;
     if(this.step===4){const advances=this.state.payments.filter(x=>!x.voided&&(x.partyId?x.partyId===d.retailerId:x.partyName===d.retailerName)).map(x=>({...x,available:x.amount-this.state.allocations.filter(a=>a.paymentId===x.id).reduce((s,a)=>s+a.amount,0)})).filter(x=>x.available>0);content=`<div class="card"><div class="card-title">Business bank details ${btn('Edit business','settings')}</div><p>${E(p.bankName||'No bank configured')}</p><p class="mono">${E(p.accountNumber)} ${E(p.ifsc)}</p><p>${E(p.upiId)}</p></div>${['TAX INVOICE','BILL OF SUPPLY'].includes(d.documentType)?`<div class="card"><div class="card-title">Apply a recorded advance</div><p class="help">Select money already received in Payments. It will be allocated once during issue.</p><div class="field-grid">${field('Available recorded payment','advancePaymentId',d.advancePaymentId||'',{choices:advances.map(x=>[x.id,`${x.date} · ${C.money(x.available)} · ${x.reference||x.method}`]),full:true})}${field('Amount to allocate (₹)','advanceAllocation',d.advanceAllocation||'',{type:'number',full:true})}</div></div>`:''}${field('Terms / notes for this document','customNotes',d.customNotes,{type:'textarea',full:true,help:'Leave blank to use your saved business terms.'})}<div class="card"><div class="card-title">Appearance</div><p class="help">Simple, Detailed and Transport presets control optional sections. HSN and essential tax information remain visible.</p>${btn('Adjust document appearance','appearance')}</div>`;}
     if(this.step===5){const issues=locked?d.snapshot?.reviewWarnings||[]:C.health(d,p,this.state.products,this.state.taxRules);content=issues.length?issues.map(x=>`<div class="health-issue ${x.level==='error'?'error':''}"><b>${x.level==='error'?'Required':'Review'}</b> · ${E(x.message)}</div>`).join(''):'<div class="readonly-banner">No blocking errors found by offline checks.</div>';content+=`<p class="help">Offline validation does not confirm GST registration, tax classification or filing compatibility. Review unverified rules and any applicability exceptions.</p>${!locked?btn('Review & issue','issue','','button-green'):''}`;}
     $('editor-fields').innerHTML=html+`<fieldset ${locked?'disabled':''} style="border:0;padding:0;margin:0">${content}</fieldset>`+`<div class="toolbar" style="margin-top:22px">${this.step>0?btn('← Previous','step',`data-step="${this.step-1}"`):''}${this.step<5?btn('Next →','step',`data-step="${this.step+1}"`,'button-green'):''}</div>`;
@@ -95,6 +136,12 @@ class InvoiceStudioApp{
     if(action==='close-dialog')return this.closeDialog();if(action==='theme'){const dark=document.documentElement.classList.toggle('dark');localStorage.setItem('invoice_studio_theme',dark?'dark':'light');return;}
     if(action==='step'){this.step=Number(data.step);this.renderSteps();this.renderEditor();return;}
     if(action==='type')return this.newDraft(data.type);if(action==='new')return this.newDraft();if(action==='save')return this.flush(true);if(action==='undo')return this.undo();
+    if(action==='company-profile')return this.settings();
+    if(action==='pick-step-buyer')return this.chooseBuyer(data.id);
+    if(action==='pick-step-transport')return this.applyTransportPreset(Number(data.index));
+    if(action==='pick-logo-file'){$('logo-file-picker')?.click();return;}
+    if(action==='use-default-logo')return this.loadDefaultLogo();
+    if(action==='remove-logo')return this.clearLogo();
     if(action==='settings')return this.settings();if(action==='catalogue')return this.catalogue();if(action==='customers')return this.customers();if(action==='register')return this.register();if(action==='reports')return this.reports();if(action==='excel')return this.excel();if(action==='payments')return this.payments();if(action==='appearance')return this.appearance();if(action==='messenger')return this.messenger();
     if(action==='copy-address'){const before=C.clone(this.draft);this.draft.shippingAddress=this.draft.billingAddress;this.changed(before);return this.renderEditor();}
     if(action==='quick-buyer'){await this.newDraft('TAX INVOICE');this.chooseBuyer(data.id);this.step=2;return this.render();}
@@ -134,7 +181,146 @@ class InvoiceStudioApp{
   selectSaved(d){this.draft=C.clone(d);this.dirty=false;this.undoStack=[];this.version=0;this.render();}
   async reviewIssue(){await this.flush(true);const issues=C.health(this.draft,this.state.profile,this.state.products,this.state.taxRules);if(issues.some(i=>i.level==='error')){this.step=5;this.renderSteps();this.renderEditor();return this.toast('Resolve the required fields in Invoice health.');}this.dialog('Issue this document',`<p>Allocate a unique document number and preserve the issued snapshot.</p>${issues.map(i=>`<div class="health-issue">${E(i.message)}</div>`).join('')}<p class="help">After issue, use a duplicate draft, cancellation or linked credit note for changes.</p><div class="dialog-actions">${btn('Continue editing','close-dialog')}${btn('Issue and save','issue-confirm','','button-green')}</div>`,'issue',true);}
   async issue(){if(this.busy)return;this.busy=true;const button=document.querySelector('[data-action="issue-confirm"]');if(button)button.disabled=true;try{await this.flush();const d=await this.api.finalise({id:this.draft.id,revision:this.draft.revision});await this.refresh();this.closeDialog();this.selectSaved(d);this.toast(`${d.invoiceNumber} issued and saved.`);this.clearNotice();}finally{this.busy=false;if(button)button.disabled=false;}}
-  settings(){const p=this.state.profile;const f=(label,key,opts={})=>field(label,key,p[key]??'',{named:true,...opts});this.dialog('Business & settings',`<form id="settings-form"><div class="field-grid">${f('Brand name','brandName')}${f('Legal name','legalName')}${f('Address','address',{type:'textarea',full:true})}${f('City','city')}${f('PIN code','pincode')}${f('Supplier state','stateCode',{choices:Object.entries(C.STATES).filter(([k])=>k!=='96').map(([k,v])=>[k,`${k} · ${v}`])})}${f('GSTIN','gstin')}${check('GST registered','registered',p.registered,true)}${check('Composition scheme','composition',p.composition,true)}${f('Phone','phone')}${f('Email','email')}${f('Product licence / FSSAI (if applicable)','fssai',{full:true})}${f('Bank name','bankName')}${f('Account number','accountNumber')}${f('IFSC','ifsc')}${f('UPI ID','upiId')}${f('Invoice prefix (1–2 characters)','prefix')}${f('Default terms','defaultTerms')}${f('Optional default GST rate (%)','defaultRate',{type:'number',help:'Leave blank to require a rate on each taxable line.'})}${f('E-way review threshold (₹)','ewayThreshold',{type:'number',help:'A configurable review trigger; exceptions/applicability need confirmation.'})}${f('Default invoice notes','invoiceNotes',{type:'textarea',full:true})}${f('Backups to retain','backupRetention',{type:'number'})}<div>${check('E-invoice applicability reviewed as enabled','einvoiceApplicable',p.einvoiceApplicable,true)}${check('Refresh app-managed Excel after issue','autoExport',p.autoExport,true)}${check('Enable optional stock tracking','stockEnabled',p.stockEnabled,true)}</div></div><div class="dialog-actions"><button type="submit" class="button-green">Save business details</button></div></form>`,'settings');}
+  applyTransportPreset(idx){
+    if(this.draft.status!=='draft')return;
+    const t=TRANSPORT_PRESETS[idx];
+    if(!t)return;
+    const before=C.clone(this.draft);
+    this.draft.transporterName=t.name;
+    this.draft.vehicleNumber=t.vehicle;
+    this.draft.driverName=t.driver;
+    this.draft.lrNumber=t.lr;
+    this.changed(before);
+    this.renderEditor();
+  }
+  handleLogoFile(input){
+    const file=input.files?.[0];
+    if(!file)return;
+    const reader=new FileReader();
+    reader.onload=e=>{
+      const img=new Image();
+      img.onload=()=>{
+        const canvas=document.createElement('canvas');
+        let w=img.width,h=img.height;
+        const maxDim=450;
+        if(w>maxDim||h>maxDim){
+          if(w>h){h=Math.round(h*(maxDim/w));w=maxDim;}
+          else{w=Math.round(w*(maxDim/h));h=maxDim;}
+        }
+        canvas.width=w;canvas.height=h;
+        const ctx=canvas.getContext('2d');
+        ctx.drawImage(img,0,0,w,h);
+        const dataUrl=canvas.toDataURL('image/png');
+        const hidden=$('settings-logo-input'),preview=$('settings-logo-preview'),none=$('settings-logo-none');
+        if(hidden)hidden.value=dataUrl;
+        if(preview){preview.src=dataUrl;preview.style.display='block';}
+        if(none)none.style.display='none';
+        this.toast('Custom logo ready to save.');
+      };
+      img.src=e.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+  async loadDefaultLogo(){
+    try{
+      const resp=await fetch('assets/magic-roots-logo.png');
+      const blob=await resp.blob();
+      const reader=new FileReader();
+      reader.onload=e=>{
+        const img=new Image();
+        img.onload=()=>{
+          const canvas=document.createElement('canvas');
+          let w=img.width,h=img.height;
+          const maxDim=450;
+          if(w>maxDim||h>maxDim){
+            if(w>h){h=Math.round(h*(maxDim/w));w=maxDim;}
+            else{w=Math.round(w*(maxDim/h));h=maxDim;}
+          }
+          canvas.width=w;canvas.height=h;
+          const ctx=canvas.getContext('2d');
+          ctx.drawImage(img,0,0,w,h);
+          const dataUrl=canvas.toDataURL('image/png');
+          const hidden=$('settings-logo-input'),preview=$('settings-logo-preview'),none=$('settings-logo-none');
+          if(hidden)hidden.value=dataUrl;
+          if(preview){preview.src=dataUrl;preview.style.display='block';}
+          if(none)none.style.display='none';
+          this.toast('Magic Roots logo selected.');
+        };
+        img.src=e.target.result;
+      };
+      reader.readAsDataURL(blob);
+    }catch(err){
+      this.toast('Could not load logo: '+err.message);
+    }
+  }
+  clearLogo(){
+    const hidden=$('settings-logo-input'),preview=$('settings-logo-preview'),none=$('settings-logo-none');
+    if(hidden)hidden.value='';
+    if(preview){preview.src='';preview.style.display='none';}
+    if(none)none.style.display='block';
+    this.toast('Custom logo removed.');
+  }
+  settings(){
+    const p=this.state.profile;
+    const f=(label,key,opts={})=>field(label,key,p[key]??'',{named:true,...opts});
+    const logoSrc=p.logoData||'assets/magic-roots-logo.png';
+    this.dialog('Business & settings',`<form id="settings-form">
+      <div class="logo-upload-wrap">
+        <div class="logo-preview-container">
+          <img id="settings-logo-preview" class="logo-preview-img" src="${E(logoSrc)}" alt="Company Logo" onerror="this.style.display='none';$('settings-logo-none').style.display='flex';">
+          <div id="settings-logo-none" class="logo-preview-none" style="display:none"><i data-lucide="image"></i><span>No Logo</span></div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;flex:1;min-width:240px">
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <strong style="font-size:12px;font-weight:800;color:var(--text)">Company Logo Image</strong>
+            <span class="tag" style="background:var(--soft);color:var(--green);font-weight:700">Prints on A4 &amp; PDF</span>
+          </div>
+          <p class="help">Upload your official brand logo. It automatically resizes and prints on Tax Invoices, Delivery Challans, and exported PDFs.</p>
+          <div class="inline-actions" style="margin-top:4px">
+            <input type="file" id="logo-file-picker" accept="image/png,image/jpeg,image/webp,image/svg+xml" style="display:none">
+            <input type="hidden" name="logoData" id="settings-logo-input" value="${E(p.logoData||'')}">
+            <button type="button" class="button-green" data-action="pick-logo-file"><i data-lucide="upload"></i>Upload Logo</button>
+            <button type="button" data-action="use-default-logo"><i data-lucide="sparkles"></i>Use Magic Roots Logo</button>
+            <button type="button" class="button-danger" data-action="remove-logo"><i data-lucide="trash-2"></i>Remove</button>
+          </div>
+        </div>
+      </div>
+      <div class="field-grid" style="margin-top:14px">
+        ${f('Brand name (trading brand)','brandName')}
+        ${f('Legal name (business entity)','legalName')}
+        ${f('Tagline / Slogan','tagline')}
+        ${f('Supplier state','stateCode',{choices:Object.entries(C.STATES).filter(([k])=>k!=='96').map(([k,v])=>[k,`${k} · ${v}`])})}
+        ${f('Company address (Premises, street, industrial estate)','address',{type:'textarea',full:true})}
+        ${f('City','city')}
+        ${f('PIN code','pincode')}
+        ${f('GSTIN','gstin')}
+        ${f('PAN','pan')}
+        ${check('GST registered','registered',p.registered,true)}
+        ${check('Composition scheme','composition',p.composition,true)}
+        ${f('Contact phone','phone')}
+        ${f('Contact email','email')}
+        ${f('Product licence / FSSAI (if applicable)','fssai',{full:true})}
+        ${f('Bank name','bankName')}
+        ${f('Account number','accountNumber')}
+        ${f('IFSC','ifsc')}
+        ${f('UPI ID (for on-invoice payment QR)','upiId')}
+        ${f('Invoice prefix (1–2 characters)','prefix')}
+        ${f('Default payment terms','defaultTerms')}
+        ${f('Optional default GST rate (%)','defaultRate',{type:'number',help:'Leave blank to require a rate on each taxable line.'})}
+        ${f('E-way review threshold (₹)','ewayThreshold',{type:'number',help:'A configurable review trigger.'})}
+        ${f('Default invoice terms & conditions','invoiceNotes',{type:'textarea',full:true,help:'Standard terms appearing on your issued invoices.'})}
+        ${f('Backups to retain','backupRetention',{type:'number'})}
+        <div class="full">
+          ${check('E-invoice applicability reviewed as enabled','einvoiceApplicable',p.einvoiceApplicable,true)}
+          ${check('Refresh app-managed Excel after issue','autoExport',p.autoExport,true)}
+          ${check('Enable optional stock tracking','stockEnabled',p.stockEnabled,true)}
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <button type="submit" class="button-green">Save company details</button>
+      </div>
+    </form>`,'settings');
+  }
   catalogue(){this.dialog('Product catalogue',`<div class="toolbar">${btn('+ Add product','new-product','','button-green')}${btn('Buyer prices','buyer-prices')}${btn('Tax rules','tax-rules')}${this.state.profile.stockEnabled?btn('Stock balances','stock'):''}</div>${table(['Product / SKU','HSN','Price ₹','GST %','Verification','Actions'],this.state.products.map(p=>`<tr>${td((p.favourite?'★ ':'')+p.name+' / '+p.sku,'wrap')}${td(p.hsn)}${td(p.price,'num')}${td(p.gstRate===''?'Not set':p.gstRate,'num')}${td(p.verified?'Verified':'Unverified') }<td>${btn('Edit','edit-product',`data-id="${E(p.id)}"`)}</td></tr>`))}`,'catalogue');}
   productForm(record){const p=record||{id:crypto.randomUUID(),revision:0,name:'',sku:'',hsn:'',unit:'NOS',price:'',gstRate:'',taxability:'taxable',casePack:'1',cost:'0',cessRate:'0',category:'',active:true,verified:false,stockEnabled:false,openingStock:'0'};this.editingEntity=p;const f=(label,key,opts={})=>field(label,key,p[key]??'',{named:true,...opts});this.dialog(p.revision?'Edit product':'Add product',`<form id="product-form"><div class="field-grid">${f('Product name','name',{full:true})}${f('SKU','sku')}${f('Category','category')}${f('Full HSN / SAC (Text)','hsn')}${f('Unit','unit')}${f('Selling price (₹)','price',{type:'number'})}${f('Cost before tax (₹)','cost',{type:'number'})}${f('GST rate (%)','gstRate',{type:'number'})}${f('Tax category','taxability',{choices:[['taxable','Taxable'],['nil','Nil-rated'],['exempt','Exempt'],['nonGST','Non-GST']]})}${f('Cess rate (%)','cessRate',{type:'number'})}${f('Units per case','casePack',{type:'number'})}${check('Price includes tax','inclusive',p.inclusive,true)}${check('Favourite product','favourite',p.favourite,true)}${check('Active product','active',p.active!==false,true)}${check('Batch fields apply','batchEnabled',p.batchEnabled,true)}${f('Licence reference','licence')}${check('Track stock for this product','stockEnabled',p.stockEnabled,true)}${f('Opening stock (units)','openingStock',{type:'number'})}${f('Evidence / notification source','source',{full:true})}${f('Verified by','verifiedBy')}${f('Verification date','verifiedDate',{type:'date'})}${check('I reviewed this classification and rate','verified',p.verified,true)}</div><p class="help">Verification belongs to this catalogue version. Issued documents retain their original line snapshots.</p><div class="dialog-actions"><button class="button-green" type="submit">Save product</button></div></form>`,'product',true);}
   customers(){this.dialog('Customer directory',`<div class="toolbar">${btn('+ Add customer','new-customer','','button-green')}${btn('Buyer prices','buyer-prices')}</div>${table(['Customer','GSTIN','Terms','Phone','Actions'],this.state.parties.map(p=>`<tr>${td((p.favourite?'★ ':'')+p.name,'wrap')}${td(p.gstin||'Unregistered')}${td(p.paymentTerms)}${td(p.phone)}<td>${btn('Edit','edit-customer',`data-id="${E(p.id)}"`)}</td></tr>`))}`,'customers');}
@@ -162,7 +348,7 @@ class InvoiceStudioApp{
   stockForm(id){this.dialog('Stock adjustment',`<form id="stock-form"><input type="hidden" name="productId" value="${E(id)}"><div class="field-grid">${field('Quantity (+ receipt / − reduction)','quantity','',{named:true,type:'number'})}${field('Batch (optional)','batch','',{named:true})}${field('Reason','reason','',{named:true,type:'textarea',full:true})}</div><div class="dialog-actions"><button class="button-green" type="submit">Record adjustment</button></div></form>`,'stockForm',true);}
   async submit(form){
     this.requireDesktop();const data=formValues(form),id=form.id;
-    if(id==='settings-form'){await this.api.saveProfile({...this.state.profile,...data,backupRetention:Number(data.backupRetention)});await this.refresh();this.closeDialog();this.render();this.toast('Business details saved. Issued documents are unchanged.');return;}
+    if(id==='settings-form'){if(this.api){await this.api.saveProfile({...this.state.profile,...data,backupRetention:Number(data.backupRetention)});await this.refresh();}else{this.state.profile={...this.state.profile,...data,backupRetention:Number(data.backupRetention)};}this.closeDialog();this.render();this.toast('Company details saved.');return;}
     const kinds={'product-form':'products','customer-form':'parties','tax-form':'taxRules'};
     if(kinds[id]){await this.api.saveEntity(kinds[id],{...this.editingEntity,...data});await this.refresh();this.render();this.toast('Record saved.');return id==='product-form'?this.catalogue():id==='customer-form'?this.customers():this.taxRules();}
     if(id==='price-form'){const old=this.state.buyerPrices.find(p=>p.partyId===data.partyId&&p.productId===data.productId);await this.api.saveEntity('buyerPrices',{...data,id:old?.id||crypto.randomUUID(),revision:old?.revision||0});await this.refresh();return this.buyerPrices();}
